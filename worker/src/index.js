@@ -490,7 +490,7 @@ function extractText(r) {
 async function llm(env, messages) {
   const errors = [];
   if (env.AI) {
-    const models = (env.LLM_MODEL || "@cf/qwen/qwen3-30b-a3b-fp8,@cf/meta/llama-3.3-70b-instruct-fp8-fast").split(",");
+    const models = (env.LLM_MODEL || "@cf/meta/llama-3.3-70b-instruct-fp8-fast,@cf/qwen/qwen3-30b-a3b-fp8").split(",");
     for (const model of models) {
       try {
         const r = await env.AI.run(model.trim(), { messages, max_tokens: 1500 });
@@ -559,7 +559,14 @@ ${plan}
 \`\`\`settings
 {"wake":{"sat":"09:00","sun":"09:00"}}
 \`\`\`
-Ключи дней в wake/sleep: default (все дни), mon, tue, wed, thu, fri, sat, sun, weekend, weekdays; null — вернуть как было. Разово на дату: {"dates":{"YYYY-MM-DD":{"wake":"08:00"}}} — завтра это ${nextDate(now.date)}. Ещё можно: "jp" (минут японского в день), "projMax" (максимум минут на проект), "commute" (дорога, мин), "project" (название), "deadline" (YYYY-MM-DD). Подъём 04:00–12:00, отбой 20:00–23:59. Если меняется и сегодняшний день — добавь ещё и блок plan.
+Ключи дней в wake/sleep: default (все дни), mon, tue, wed, thu, fri, sat, sun, weekend, weekdays; null — вернуть как было. Разово на дату: {"dates":{"YYYY-MM-DD":{"wake":"08:00"}}} — завтра это ${nextDate(now.date)}. Ещё можно: "jp" (минут японского в день), "projMax" (максимум минут на проект), "commute" (дорога, мин), "project" (название), "deadline" (YYYY-MM-DD). Подъём 04:00–12:00, отбой 20:00–23:59.
+Примеры (фраза → блок):
+«дорога до колледжа час» → \`\`\`settings {"commute":60} \`\`\`
+«по выходным встаю в 9» → \`\`\`settings {"wake":{"weekend":"09:00"}} \`\`\`
+«завтра подъём в 8» → \`\`\`settings {"dates":{"${nextDate(now.date)}":{"wake":"08:00"}}} \`\`\`
+«ложусь в 23:30» → \`\`\`settings {"sleep":{"default":"23:30"}} \`\`\`
+«японского 2 часа в день» → \`\`\`settings {"jp":120} \`\`\`
+Просьба про режим вообще (дорога, подъём по дням, длительности) — это settings, НЕ plan. Блок plan — только если просят изменить именно сегодняшний день. Если человек просто объясняет или уточняет и режим уже такой — ответь словами, без блоков.
 4. Быть репетитором японского: объяснять грамматику текущей недели, давать мини-задания, проверять его предложения (исправь и объясни ошибку), гонять по словам. Японские слова пиши каной или кандзи с чтением в скобках; ромадзи — только на неделях 1–2.
 
 Всегда отвечай только на русском языке (японский — только как учебный материал). Не показывай свои рассуждения, сразу пиши ответ. /no_think`;
@@ -624,8 +631,13 @@ async function chat(env, text, at = new Date()) {
   let out = answer || (patch || events ? "Запомнил ✅" : "Не понял, переформулируй, пожалуйста 🙏");
   if (patch) {
     const { settings: next, errors } = mergeSettings(settings, patch, now.date);
-    await putJSON(env, "settings", next);
-    out += "\n\n⚙️ Режим обновлён:\n" + describeSettings(env, next, now.date);
+    if (JSON.stringify(next) === JSON.stringify(settings)) {
+      if (!answer || answer.startsWith("Запомнил")) out = "👍 Это уже так и стоит в режиме.";
+      out += "\n\n⚙️ Режим:\n" + describeSettings(env, next, now.date);
+    } else {
+      await putJSON(env, "settings", next);
+      out += "\n\n⚙️ Режим обновлён:\n" + describeSettings(env, next, now.date);
+    }
     if (errors.length) out += "\n\n⚠️ Не применил: " + errors.join("; ");
   }
   if (events) {

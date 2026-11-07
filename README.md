@@ -10,7 +10,7 @@
 
 ## Как устроено
 
-`worker/src/index.js` — весь бот. Cron Cloudflare срабатывает раз в минуту, Telegram присылает сообщения через webhook. План дня и история чата хранятся в Cloudflare KV. Нейросеть — Workers AI (Qwen3 30B, запасная — Llama 3.3 70B; бесплатно ~10 000 «нейронов» в день), запасной вариант — бесплатные модели OpenRouter, если задан `OPENROUTER_API_KEY`.
+`worker/src/index.js` — весь бот. Cron Cloudflare срабатывает раз в минуту, Telegram присылает сообщения через webhook. План дня и история чата хранятся в Cloudflare KV. Нейросеть — Workers AI (Llama 3.3 70B, запасная — Qwen3 30B; бесплатно ~10 000 «нейронов» в день), запасной вариант — бесплатные модели OpenRouter, если задан `OPENROUTER_API_KEY`.
 
 Деплой — workflow «Деплой ассистента» при каждом пуше в `worker/`: сам создаёт KV, выкладывает воркер, передаёт секреты и подключает webhook бота.
 
@@ -38,7 +38,7 @@
 | `PROJECT_NAME` | `Проект` | Название проекта |
 | `PROJECT_DEADLINE` | `2027-01-15` | Дедлайн для обратного отсчёта |
 | `LAT`, `LON` | Новосибирск | Координаты для погоды |
-| `LLM_MODEL` | `@cf/qwen/qwen3-30b-a3b-fp8,@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Модели Workers AI через запятую, по порядку |
+| `LLM_MODEL` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast,@cf/qwen/qwen3-30b-a3b-fp8` | Модели Workers AI через запятую, по порядку |
 
 После изменения переменных перезапусти «Деплой ассистента» вручную.
 
