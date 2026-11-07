@@ -354,6 +354,18 @@ export async function tick(env, at = new Date()) {
 
 // ---------- нейросеть ----------
 
+/** Убирает служебную разметку моделей: размышления <think>, каналы gpt-oss (<|start|>assistant…final) */
+export function cleanReply(t) {
+  t = String(t || "").replace(/<think>[\s\S]*?<\/think>/g, "").replace(/^[\s\S]*<\/think>/, "");
+  if (/<\|(start|end|return|channel|message)\|>|^analysis/.test(t)) {
+    const blocks = t.split(/<\|start\|>assistant/);
+    const finals = blocks.filter((b) => /^\s*(<\|channel\|>)?final(?!\s*:)/.test(b));
+    const pick = finals.length ? finals[finals.length - 1] : blocks[blocks.length - 1];
+    t = pick.replace(/^\s*(<\|channel\|>)?final(<\|message\|>)?/, "");
+  }
+  return t.replace(/<\|[a-z_]+\|>/g, "").trim();
+}
+
 function extractText(r) {
   if (!r) return "";
   if (typeof r === "string") return r;
@@ -373,13 +385,16 @@ function extractText(r) {
 async function llm(env, messages) {
   const errors = [];
   if (env.AI) {
-    try {
-      const r = await env.AI.run(env.LLM_MODEL || "@cf/openai/gpt-oss-120b", { messages, max_tokens: 2000 });
-      const t = extractText(r).trim();
-      if (t) return t;
-      errors.push("Workers AI: пустой ответ");
-    } catch (e) {
-      errors.push("Workers AI: " + String(e.message || e).slice(0, 100));
+    const models = (env.LLM_MODEL || "@cf/qwen/qwen3-30b-a3b-fp8,@cf/meta/llama-3.3-70b-instruct-fp8-fast").split(",");
+    for (const model of models) {
+      try {
+        const r = await env.AI.run(model.trim(), { messages, max_tokens: 1500 });
+        const t = cleanReply(extractText(r));
+        if (t) return t;
+        errors.push(`${model}: пустой ответ`);
+      } catch (e) {
+        errors.push(`${model}: ` + String(e.message || e).slice(0, 100));
+      }
     }
   }
   if (env.OPENROUTER_API_KEY) {
@@ -391,7 +406,7 @@ async function llm(env, messages) {
           body: JSON.stringify({ model: model.trim(), messages, max_tokens: 2000 }),
         });
         const d = await r.json();
-        const t = extractText(d).trim();
+        const t = cleanReply(extractText(d));
         if (t) return t;
         errors.push(`${model}: ${String(d.error?.message || "пустой ответ").slice(0, 80)}`);
       } catch (e) {
@@ -433,7 +448,9 @@ ${plan}
 [{"start":"HH:MM","end":"HH:MM","title":"эмодзи + название","remind":"текст напоминания"}]
 \`\`\`
 с ПОЛНЫМ списком блоков от ${fmt(now.min)} до конца дня, включая неизменённые. Прошедшие блоки не включай. Время кратно 30 минутам. Сон и еду не выкидывай: ужин, «🌙 Закругляемся» за час до отбоя и «🛏 В кровать» за полчаса остаются. Если план не меняется — блок не добавляй. Меняй только то, о чём просят.
-3. Быть репетитором японского: объяснять грамматику текущей недели, давать мини-задания, проверять его предложения (исправь и объясни ошибку), гонять по словам. Японские слова пиши каной или кандзи с чтением в скобках; ромадзи — только на неделях 1–2.`;
+3. Быть репетитором японского: объяснять грамматику текущей недели, давать мини-задания, проверять его предложения (исправь и объясни ошибку), гонять по словам. Японские слова пиши каной или кандзи с чтением в скобках; ромадзи — только на неделях 1–2.
+
+Всегда отвечай только на русском языке (японский — только как учебный материал). Не показывай свои рассуждения, сразу пиши ответ. /no_think`;
 }
 
 function parsePlanBlock(reply, now) {
