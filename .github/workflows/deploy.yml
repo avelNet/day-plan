@@ -117,10 +117,17 @@ jobs:
         run: |
           hook=$(printf %s "$TG_TOKEN" | sha256sum | cut -c1-32)
           echo "::add-mask::$hook"
-          curl -sS -f -o /dev/null "https://api.telegram.org/bot$TG_TOKEN/setWebhook" \
-            --data-urlencode "url=$WORKER_URL/tg" \
-            --data-urlencode "secret_token=$hook" \
-            --data-urlencode 'allowed_updates=["message"]'
+          # новый поддомен workers.dev может появиться в DNS не сразу — пробуем несколько раз
+          for i in 1 2 3 4 5 6; do
+            resp=$(curl -sS "https://api.telegram.org/bot$TG_TOKEN/setWebhook" \
+              --data-urlencode "url=$WORKER_URL/tg" \
+              --data-urlencode "secret_token=$hook" \
+              --data-urlencode 'allowed_updates=["message"]')
+            echo "Telegram: $(echo "$resp" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s);console.log(d.ok?"ok":d.description)}catch{console.log("нет ответа")}})')"
+            if echo "$resp" | grep -q '"ok":true'; then break; fi
+            if [ "$i" = 6 ]; then echo "::error::Telegram не принял webhook — перезапусти деплой через пару минут"; exit 1; fi
+            sleep 20
+          done
           curl -sS -f -o /dev/null "https://api.telegram.org/bot$TG_TOKEN/setMyCommands" \
             -H "Content-Type: application/json" \
             -d '{"commands":[{"command":"plan","description":"План на сегодня"},{"command":"replan","description":"Перестроить план"},{"command":"reset","description":"Забыть историю переписки"},{"command":"help","description":"Что я умею"}]}'
