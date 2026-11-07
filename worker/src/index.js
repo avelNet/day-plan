@@ -702,7 +702,11 @@ export async function handleUpdate(env, upd, at = new Date()) {
       const { events, notes } = buildPlan(lessons, c2);
       const body = renderPlan({ date, wd, events, notes, lessons, error }, c2, { update: true }).split("\n").slice(1).join("\n");
       const text = `🌙 План на завтра (${WEEKDAYS_NOM[wd]}, ${ddmm(date)})\n` + body
-        + `\n\nПодъём в ${fmt(c2.wake)}. Утром пришлю точный план — пары ещё могут поменяться.`;
+        + `\n\nПодъём в ${fmt(c2.wake)}. ` + (lessons.length
+          ? "Утром пришлю точный план — пары ещё могут поменяться."
+          : wd <= 4 && !error
+            ? "Пары пока не выставлены — если появятся, утром план их учтёт."
+            : "Спокойной ночи 🌙");
       return send(env, text);
     }
     let st = await getJSON(env, "day");
