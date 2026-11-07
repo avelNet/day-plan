@@ -192,9 +192,10 @@ def build_plan(lessons):
     return merged, notes
 
 
-def plan_message(today, lessons, events, notes, error=None):
+def plan_message(today, lessons, events, notes, error=None, update=False):
     days_left = (date.fromisoformat(DEADLINE) - today).days
-    lines = [f"☀️ Доброе утро! План на {WEEKDAYS[today.weekday()]}, {today.strftime('%d.%m')}"]
+    head = "✏️ Обновлённый план" if update else "☀️ Доброе утро! План"
+    lines = [f"{head} на {WEEKDAYS[today.weekday()]}, {today.strftime('%d.%m')}"]
     if days_left >= 0:
         lines.append(f"⏳ До дедлайна «{PROJECT}»: {days_left} дн.")
     lines.append("")
@@ -214,7 +215,9 @@ def plan_message(today, lessons, events, notes, error=None):
         lines.append("")
         lines.extend(notes)
     lines.append("\n🎧 Японский фоном: пробежка, дорога, еда")
-    if events and events[0][2].startswith("🏃"):
+    if update:
+        pass
+    elif events and events[0][2].startswith("🏃"):
         lines.append("\nПодъём! Стакан воды, 10 минут зарядки и на пробежку 🏃")
     else:
         lines.append("\nПодъём! Стакан воды — и собираемся")
@@ -245,9 +248,12 @@ def main():
     now = datetime.now(TZ)
     today, now_min = now.date(), now.hour * 60 + now.minute
     state = load_state()
+    force = os.getenv("REPLAN") == "true"  # ручной запуск с галочкой «перестроить план»
+    new_day = state.get("date") != today.isoformat()
 
-    if state.get("date") != today.isoformat():
-        if now_min < WAKE - EARLY:
+    # Новый день, ручной перезапуск или журнал в прошлый раз не ответил — строим план заново
+    if new_day or force or state.get("journal_failed"):
+        if new_day and not force and now_min < WAKE - EARLY:
             print("Ещё рано")
             return
         lessons, error = [], None
@@ -255,16 +261,21 @@ def main():
             lessons = get_schedule(login(), today.isoformat())
         except Exception as e:
             error = str(e)[:150]
-        events, notes = build_plan(lessons)
-        send_telegram(plan_message(today, lessons, events, notes, error))
-        state = {"date": today.isoformat(),
-                 "reminders": [[s, r] for s, _, _, r in events if r],
-                 "sent": []}
-        # всё, что уже прошло к моменту плана, не дублируем
-        state["sent"] = [i for i, (s, _) in enumerate(state["reminders"]) if s <= now_min + EARLY]
-        save_state(state)
-        print("План отправлен")
-        return
+        retry = not new_day and not force
+        if retry and error:
+            pass  # журнал всё ещё не отвечает — молча работаем по старому плану
+        else:
+            events, notes = build_plan(lessons)
+            send_telegram(plan_message(today, lessons, events, notes, error, update=not new_day))
+            state = {"date": today.isoformat(),
+                     "reminders": [[s, r] for s, _, _, r in events if r],
+                     "journal_failed": bool(error),
+                     "sent": []}
+            # всё, что уже прошло к моменту плана, не дублируем
+            state["sent"] = [i for i, (s, _) in enumerate(state["reminders"]) if s <= now_min + EARLY]
+            save_state(state)
+            print("План отправлен")
+            return
 
     sent = set(state.get("sent", []))
     for i, (s, text) in enumerate(state.get("reminders", [])):

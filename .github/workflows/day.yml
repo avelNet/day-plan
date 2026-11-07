@@ -2,6 +2,11 @@ name: Режим дня
 
 on:
   workflow_dispatch: # запускается с cron-job.org в :00 и :30 с 06:00 до 22:30 или вручную
+    inputs:
+      replan:
+        description: "Перестроить и прислать план на сегодня заново"
+        type: boolean
+        default: false
 
 concurrency:
   group: day-plan # два запуска одновременно не пойдут
@@ -30,6 +35,7 @@ jobs:
           LAT: ${{ vars.LAT }}
           LON: ${{ vars.LON }}
           TZ_NAME: Asia/Novosibirsk
+          REPLAN: ${{ inputs.replan }}
           WAKE: ${{ vars.WAKE }}
           SLEEP: ${{ vars.SLEEP }}
           COMMUTE_MIN: ${{ vars.COMMUTE_MIN }}
