@@ -609,9 +609,19 @@ async function chat(env, text, at = new Date()) {
     return;
   }
 
-  const { text: noSettings, patch } = parseSettingsBlock(reply);
-  const { text: answer, events } = parsePlanBlock(noSettings, now);
-  let out = answer || "Готово.";
+  let { text: noSettings, patch } = parseSettingsBlock(reply);
+  let { text: answer, events } = parsePlanBlock(noSettings, now);
+  // Модель ответила пустотой или голой пометкой вида «[режим обновлён]» без блока — переспрашиваем один раз
+  if (!patch && !events && (!answer || /^\[[^\]]*\]$/.test(answer))) {
+    try {
+      reply = await llm(env, [...messages, { role: "assistant", content: reply },
+        { role: "user", content: "Ты не прислал блок ```settings``` или ```plan```. Ответь заново: короткий ответ и, если нужно что-то изменить, сам блок в конце." }]);
+      ({ text: noSettings, patch } = parseSettingsBlock(reply));
+      ({ text: answer, events } = parsePlanBlock(noSettings, now));
+    } catch { /* оставим первый ответ */ }
+  }
+  if (/^\[[^\]]*\]$/.test(answer || "")) answer = "";
+  let out = answer || (patch || events ? "Запомнил ✅" : "Не понял, переформулируй, пожалуйста 🙏");
   if (patch) {
     const { settings: next, errors } = mergeSettings(settings, patch, now.date);
     await putJSON(env, "settings", next);
@@ -627,7 +637,8 @@ async function chat(env, text, at = new Date()) {
   }
   await send(env, out);
 
-  hist.push({ role: "user", content: text }, { role: "assistant", content: answer + (events ? "\n[план на сегодня обновлён]" : "") + (patch ? "\n[режим обновлён]" : "") });
+  // в историю кладём настоящий ответ вместе с блоками — так модель видит правильный формат
+  hist.push({ role: "user", content: text }, { role: "assistant", content: reply.trim() });
   await putJSON(env, "hist", hist.slice(-HIST_LEN));
 }
 
