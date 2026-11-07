@@ -46,10 +46,17 @@ const JP_WEEKS = [
 
 // ---------- настройки и время ----------
 
-function cfg(env) {
+const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const DAY_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"];
+
+/**
+ * Настройки: переменные окружения + постоянные правила из чата (KV "settings"):
+ * {wake:{default,mon..sun}, sleep:{...}, commute, jp, projMax, project, deadline, dates:{"YYYY-MM-DD":{wake,sleep}}}
+ */
+export function cfg(env, settings = null, date = null, wd = null) {
   const mins = (v, d) => { const [h, m] = String(v || d).split(":").map(Number); return h * 60 + m; };
   const int = (v, d) => (Number.isFinite(parseInt(v, 10)) ? parseInt(v, 10) : d);
-  return {
+  const c = {
     tz: env.TZ_NAME || "Asia/Novosibirsk",
     wake: mins(env.WAKE, "06:30"),
     sleep: mins(env.SLEEP, "23:00"),
@@ -61,6 +68,105 @@ function cfg(env) {
     lat: env.LAT || "55.03",
     lon: env.LON || "82.92",
   };
+  const s = settings || {};
+  for (const f of ["wake", "sleep"]) {
+    const v = s[f] || {};
+    const pick = (wd !== null && v[DAY_KEYS[wd]]) || v.default;
+    if (pick) c[f] = mins(pick);
+    const once = date && s.dates?.[date]?.[f];
+    if (once) c[f] = mins(once);
+  }
+  if (s.commute != null) c.commute = int(s.commute, c.commute);
+  if (s.jp != null) c.jp = int(s.jp, c.jp);
+  if (s.projMax != null) c.projMax = int(s.projMax, c.projMax);
+  if (s.project) c.project = String(s.project);
+  if (s.deadline) c.deadline = String(s.deadline);
+  return c;
+}
+
+/** Настройки на сейчас: часовой пояс из env, правила из KV, подъём/отбой — по дню недели и дате */
+async function loadCfg(env, at = new Date()) {
+  const settings = (await getJSON(env, "settings")) || {};
+  const now = nowLocal(cfg(env).tz, at);
+  return { c: cfg(env, settings, now.date, now.wd), now, settings };
+}
+
+const validTime = (t) => /^\d{1,2}:\d{2}$/.test(String(t || ""));
+
+/** Применяет изменения из чата. Возвращает {settings, errors} */
+export function mergeSettings(cur, patch, today) {
+  const s = JSON.parse(JSON.stringify(cur || {}));
+  const errors = [];
+  const okTime = (f, t) => {
+    if (!validTime(t)) return false;
+    const m = Number(t.split(":")[0]) * 60 + Number(t.split(":")[1]);
+    if (f === "wake" && (m < 240 || m > 720)) { errors.push(`подъём ${t} — допустимо 04:00–12:00`); return false; }
+    if (f === "sleep" && (m < 1200 || m > 1439)) { errors.push(`отбой ${t} — допустимо 20:00–23:59`); return false; }
+    return true;
+  };
+  const expand = (k) => (k === "weekend" ? ["sat", "sun"] : k === "weekdays" ? ["mon", "tue", "wed", "thu", "fri"]
+    : k === "all" ? ["default", ...DAY_KEYS] : [k]);
+  for (const f of ["wake", "sleep"]) {
+    if (!patch[f] || typeof patch[f] !== "object") continue;
+    s[f] = s[f] || {};
+    for (const [k, v] of Object.entries(patch[f])) {
+      for (const key of expand(k)) {
+        if (key !== "default" && !DAY_KEYS.includes(key)) continue;
+        if (v === null) delete s[f][key];
+        else if (okTime(f, v)) s[f][key] = v.padStart(5, "0");
+      }
+    }
+  }
+  if (patch.dates && typeof patch.dates === "object") {
+    s.dates = s.dates || {};
+    for (const [date, v] of Object.entries(patch.dates)) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      if (v === null) { delete s.dates[date]; continue; }
+      const one = { ...(s.dates[date] || {}) };
+      for (const f of ["wake", "sleep"]) {
+        if (v[f] === null) delete one[f];
+        else if (v[f] && okTime(f, v[f])) one[f] = v[f].padStart(5, "0");
+      }
+      if (Object.keys(one).length) s.dates[date] = one; else delete s.dates[date];
+    }
+  }
+  for (const [k, lo, hi] of [["commute", 0, 180], ["jp", 0, 480], ["projMax", 0, 720]]) {
+    if (patch[k] === null) delete s[k];
+    else if (patch[k] != null) {
+      const n = parseInt(patch[k], 10);
+      if (Number.isFinite(n) && n >= lo && n <= hi) s[k] = n; else errors.push(`${k}=${patch[k]} — вне диапазона`);
+    }
+  }
+  if (patch.project) s.project = String(patch.project).slice(0, 60);
+  if (patch.deadline && /^\d{4}-\d{2}-\d{2}$/.test(patch.deadline)) s.deadline = patch.deadline;
+  // прошедшие разовые исключения больше не нужны
+  for (const date of Object.keys(s.dates || {})) if (date < today) delete s.dates[date];
+  return { settings: s, errors };
+}
+
+/** Режим человеческими словами: подъём/отбой по дням, исключения и прочее */
+export function describeSettings(env, settings, today) {
+  const group = (f) => {
+    const parts = [];
+    let i = 0;
+    while (i < 7) {
+      const v = fmt(cfg(env, settings, null, i)[f]);
+      let j = i;
+      while (j + 1 < 7 && fmt(cfg(env, settings, null, j + 1)[f]) === v) j++;
+      parts.push(`${i === j ? DAY_SHORT[i] : DAY_SHORT[i] + "–" + DAY_SHORT[j]} ${v}`);
+      i = j + 1;
+    }
+    return parts.join(", ");
+  };
+  const base = cfg(env, settings);
+  const lines = [`⏰ Подъём: ${group("wake")}`, `😴 Отбой: ${group("sleep")}`];
+  const dates = Object.entries(settings?.dates || {}).filter(([d]) => d >= today).sort();
+  for (const [d, v] of dates) {
+    lines.push(`📌 ${ddmm(d)}: ${[v.wake && "подъём " + v.wake, v.sleep && "отбой " + v.sleep].filter(Boolean).join(", ")}`);
+  }
+  lines.push(`🇯🇵 Японский: ${base.jp} мин в день · 💻 ${base.project}: до ${base.projMax} мин · 🚌 дорога ${base.commute} мин`);
+  lines.push(`⏳ Дедлайн проекта: ${base.deadline}`);
+  return lines.join("\n");
 }
 
 function nowLocal(tz, at = new Date()) {
@@ -331,8 +437,7 @@ async function makePlan(env, c, now, { update = false, retry = false, silent = f
 // ---------- cron: план и напоминания ----------
 
 export async function tick(env, at = new Date()) {
-  const c = cfg(env);
-  const now = nowLocal(c.tz, at);
+  const { c, now } = await loadCfg(env, at);
   const st = await getJSON(env, "day");
 
   if (!st || st.date !== now.date) {
@@ -424,7 +529,7 @@ function jpWeek(date) {
   return `неделя ${w} из ${JP_WEEKS.length}: ${JP_WEEKS[w - 1]}`;
 }
 
-function systemPrompt(st, c, now) {
+function systemPrompt(st, c, now, env, settings) {
   const plan = st.events
     .map((e) => `${e.e <= now.min ? "[прошло] " : ""}${fmt(e.s)}–${fmt(e.e)} ${e.t}${e.r ? ` | напоминание: ${e.r.replace(/\n/g, " ")}` : ""}`)
     .join("\n");
@@ -433,7 +538,9 @@ function systemPrompt(st, c, now) {
 Отвечай по-русски, коротко, как в мессенджере. Без markdown: никаких **, #, таблиц — обычный текст, эмодзи можно.
 
 Сейчас: ${WEEKDAYS_NOM[now.wd]}, ${ddmm(now.date)}, ${fmt(now.min)}.
-Режим: подъём ${fmt(c.wake)}, отбой ${fmt(c.sleep)}, утром зарядка и пробежка, завтрак обязателен. Дорога до колледжа ${c.commute} мин.
+Сегодня подъём ${fmt(c.wake)}, отбой ${fmt(c.sleep)}. После подъёма всегда зарядка и пробежка, завтрак обязателен. Дорога до колледжа ${c.commute} мин.
+Постоянный режим:
+${describeSettings(env, settings, now.date)}
 Проект «${c.project}», дедлайн ${c.deadline} (осталось ${daysBetween(now.date, c.deadline)} дн.).
 Японский: цель — JLPT N4 в начале июля 2027, ${c.jp} мин активной учёбы в день плюс аудирование фоном. Сейчас ${jpWeek(now.date)}. Слова повторяет в Renshuu.
 Пары сегодня: ${lessons}.
@@ -448,9 +555,24 @@ ${plan}
 [{"start":"HH:MM","end":"HH:MM","title":"эмодзи + название","remind":"текст напоминания"}]
 \`\`\`
 с ПОЛНЫМ списком блоков от ${fmt(now.min)} до конца дня, включая неизменённые. Прошедшие блоки не включай. Время кратно 30 минутам. Сон и еду не выкидывай: ужин, «🌙 Закругляемся» за час до отбоя и «🛏 В кровать» за полчаса остаются. Если план не меняется — блок не добавляй. Меняй только то, о чём просят.
-3. Быть репетитором японского: объяснять грамматику текущей недели, давать мини-задания, проверять его предложения (исправь и объясни ошибку), гонять по словам. Японские слова пиши каной или кандзи с чтением в скобках; ромадзи — только на неделях 1–2.
+3. Менять режим на будущее: «по выходным встаю в 9», «завтра подъём в 8», «ложусь в 23:30», «японского 2 часа в день». Утренний план с пробежкой тогда сам начнётся с нового времени подъёма. Добавь в конце ответа блок с ТОЛЬКО изменёнными полями:
+\`\`\`settings
+{"wake":{"sat":"09:00","sun":"09:00"}}
+\`\`\`
+Ключи дней в wake/sleep: default (все дни), mon, tue, wed, thu, fri, sat, sun, weekend, weekdays; null — вернуть как было. Разово на дату: {"dates":{"YYYY-MM-DD":{"wake":"08:00"}}} — завтра это ${nextDate(now.date)}. Ещё можно: "jp" (минут японского в день), "projMax" (максимум минут на проект), "commute" (дорога, мин), "project" (название), "deadline" (YYYY-MM-DD). Подъём 04:00–12:00, отбой 20:00–23:59. Если меняется и сегодняшний день — добавь ещё и блок plan.
+4. Быть репетитором японского: объяснять грамматику текущей недели, давать мини-задания, проверять его предложения (исправь и объясни ошибку), гонять по словам. Японские слова пиши каной или кандзи с чтением в скобках; ромадзи — только на неделях 1–2.
 
 Всегда отвечай только на русском языке (японский — только как учебный материал). Не показывай свои рассуждения, сразу пиши ответ. /no_think`;
+}
+
+const nextDate = (date) => new Date(Date.parse(date + "T12:00:00Z") + 86400000).toISOString().slice(0, 10);
+
+function parseSettingsBlock(reply) {
+  const m = reply.match(/```settings\s*([\s\S]*?)```/);
+  if (!m) return { text: reply, patch: null };
+  let patch = null;
+  try { patch = JSON.parse(m[1]); } catch { /* модель прислала кривой JSON */ }
+  return { text: reply.replace(m[0], "").trim(), patch: patch && typeof patch === "object" ? patch : null };
 }
 
 function parsePlanBlock(reply, now) {
@@ -471,15 +593,14 @@ function parsePlanBlock(reply, now) {
 }
 
 async function chat(env, text, at = new Date()) {
-  const c = cfg(env);
-  const now = nowLocal(c.tz, at);
+  const { c, now, settings } = await loadCfg(env, at);
   tg(env, "sendChatAction", { chat_id: env.TG_CHAT_ID, action: "typing" }).catch(() => {});
 
   let st = await getJSON(env, "day");
   if (!st || st.date !== now.date) st = await makePlan(env, c, now, { silent: true });
 
   const hist = (await getJSON(env, "hist")) || [];
-  const messages = [{ role: "system", content: systemPrompt(st, c, now) }, ...hist, { role: "user", content: text }];
+  const messages = [{ role: "system", content: systemPrompt(st, c, now, env, settings) }, ...hist, { role: "user", content: text }];
   let reply;
   try {
     reply = await llm(env, messages);
@@ -488,8 +609,15 @@ async function chat(env, text, at = new Date()) {
     return;
   }
 
-  const { text: answer, events } = parsePlanBlock(reply, now);
+  const { text: noSettings, patch } = parseSettingsBlock(reply);
+  const { text: answer, events } = parsePlanBlock(noSettings, now);
   let out = answer || "Готово.";
+  if (patch) {
+    const { settings: next, errors } = mergeSettings(settings, patch, now.date);
+    await putJSON(env, "settings", next);
+    out += "\n\n⚙️ Режим обновлён:\n" + describeSettings(env, next, now.date);
+    if (errors.length) out += "\n\n⚠️ Не применил: " + errors.join("; ");
+  }
   if (events) {
     const kept = st.events.filter((e) => e.s < now.min && !events.some((n) => n.s === e.s));
     for (const e of events) e.sent = !e.r || e.s - EARLY <= now.min;
@@ -499,7 +627,7 @@ async function chat(env, text, at = new Date()) {
   }
   await send(env, out);
 
-  hist.push({ role: "user", content: text }, { role: "assistant", content: answer + (events ? "\n[план на сегодня обновлён]" : "") });
+  hist.push({ role: "user", content: text }, { role: "assistant", content: answer + (events ? "\n[план на сегодня обновлён]" : "") + (patch ? "\n[режим обновлён]" : "") });
   await putJSON(env, "hist", hist.slice(-HIST_LEN));
 }
 
@@ -514,11 +642,13 @@ const HELP = `Я веду твой режим дня и учу японском�
 
 Пиши как обычно:
 • «перенеси японский на вечер», «я заболел, облегчи день», «что у меня дальше?»
+• «по выходным встаю в 9», «завтра подъём в 8», «японского 2 часа в день»
 • «объясни て-форму», «дай 10 слов на эту неделю», «проверь: わたしは学生です»
 
 Команды:
 /plan — план на сегодня
 /replan — перестроить план (подтянуть пары из журнала)
+/settings — мой режим по дням
 /reset — забыть историю переписки`;
 
 export async function handleUpdate(env, upd, at = new Date()) {
@@ -530,11 +660,11 @@ export async function handleUpdate(env, upd, at = new Date()) {
     return;
   }
   const cmd = text.split(/[\s@]/)[0].toLowerCase();
-  const c = cfg(env);
-  const now = nowLocal(c.tz, at);
+  const { c, now, settings } = await loadCfg(env, at);
 
   if (cmd === "/start" || cmd === "/help") return send(env, HELP);
   if (cmd === "/reset") { await env.KV.delete("hist"); return send(env, "🧹 Историю переписки очистил"); }
+  if (cmd === "/settings") return send(env, "⚙️ Твой режим\n\n" + describeSettings(env, settings, now.date) + "\n\nИзменить можно обычным сообщением, например: «по выходным встаю в 9».");
   if (cmd === "/replan") { await makePlan(env, c, now, { update: true }); return; }
   if (cmd === "/plan") {
     let st = await getJSON(env, "day");

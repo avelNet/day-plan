@@ -130,5 +130,5 @@ jobs:
           done
           curl -sS -f -o /dev/null "https://api.telegram.org/bot$TG_TOKEN/setMyCommands" \
             -H "Content-Type: application/json" \
-            -d '{"commands":[{"command":"plan","description":"План на сегодня"},{"command":"replan","description":"Перестроить план"},{"command":"reset","description":"Забыть историю переписки"},{"command":"help","description":"Что я умею"}]}'
+            -d '{"commands":[{"command":"plan","description":"План на сегодня"},{"command":"replan","description":"Перестроить план"},{"command":"settings","description":"Мой режим по дням"},{"command":"reset","description":"Забыть историю переписки"},{"command":"help","description":"Что я умею"}]}'
           echo "Готово: бот подключён к $WORKER_URL"
