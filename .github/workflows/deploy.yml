@@ -1,0 +1,127 @@
+name: Деплой ассистента
+
+on:
+  push:
+    branches: [main]
+    paths: ["worker/**", ".github/workflows/deploy.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Проверить, что Cloudflare настроен
+        id: check
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::notice::Секретов CLOUDFLARE_API_TOKEN и CLOUDFLARE_ACCOUNT_ID пока нет — деплой пропущен"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+        working-directory: .
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.ok == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.ok == 'true'
+        with:
+          node-version: 22
+
+      - name: Установить wrangler
+        if: steps.check.outputs.ok == 'true'
+        run: npm install -g wrangler@4
+
+      - name: Хранилище KV (создаётся один раз)
+        if: steps.check.outputs.ok == 'true'
+        run: |
+          find_id() {
+            wrangler kv namespace list 2>/dev/null | node -e '
+              let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+                try {
+                  const list = JSON.parse(s.slice(s.indexOf("[")));
+                  const ns = list.find(x => x.title === "day-plan") || list.find(x => x.title.includes("day-plan"));
+                  process.stdout.write(ns ? ns.id : "");
+                } catch { }
+              });'
+          }
+          id=$(find_id)
+          if [ -z "$id" ]; then
+            wrangler kv namespace create day-plan
+            id=$(find_id)
+          fi
+          if [ -z "$id" ]; then echo "::error::Не удалось найти или создать KV day-plan"; exit 1; fi
+          sed -i "s/__KV_ID__/$id/" wrangler.toml
+
+      - name: Деплой
+        if: steps.check.outputs.ok == 'true'
+        env:
+          WAKE: ${{ vars.WAKE }}
+          SLEEP: ${{ vars.SLEEP }}
+          COMMUTE_MIN: ${{ vars.COMMUTE_MIN }}
+          JP_MIN: ${{ vars.JP_MIN }}
+          PROJECT_MAX_MIN: ${{ vars.PROJECT_MAX_MIN }}
+          PROJECT_NAME: ${{ vars.PROJECT_NAME }}
+          PROJECT_DEADLINE: ${{ vars.PROJECT_DEADLINE }}
+          LAT: ${{ vars.LAT }}
+          LON: ${{ vars.LON }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
+        run: |
+          args=(--var "TZ_NAME:Asia/Novosibirsk")
+          for v in WAKE SLEEP COMMUTE_MIN JP_MIN PROJECT_MAX_MIN PROJECT_NAME PROJECT_DEADLINE LAT LON LLM_MODEL OPENROUTER_MODELS; do
+            val="${!v}"
+            if [ -n "$val" ]; then args+=(--var "$v:$val"); fi
+          done
+          wrangler deploy "${args[@]}" 2>&1 | tee deploy.log
+          url=$(grep -o 'https://[^ ]*workers\.dev' deploy.log | head -1)
+          if [ -z "$url" ]; then
+            echo "::error::Нет адреса workers.dev. Открой в Cloudflare раздел Workers & Pages один раз, выбери поддомен и перезапусти деплой"
+            exit 1
+          fi
+          echo "WORKER_URL=$url" >> "$GITHUB_ENV"
+
+      - name: Секреты воркера
+        if: steps.check.outputs.ok == 'true'
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          JOURNAL_LOGIN: ${{ secrets.JOURNAL_LOGIN }}
+          JOURNAL_PASSWORD: ${{ secrets.JOURNAL_PASSWORD }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          node -e '
+            const o = {};
+            for (const k of ["TG_TOKEN", "TG_CHAT_ID", "JOURNAL_LOGIN", "JOURNAL_PASSWORD", "OPENROUTER_API_KEY"])
+              if (process.env[k]) o[k] = process.env[k];
+            require("fs").writeFileSync("secrets.json", JSON.stringify(o));'
+          wrangler secret bulk secrets.json
+          rm -f secrets.json
+
+      - name: Подключить Telegram
+        if: steps.check.outputs.ok == 'true'
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+        run: |
+          hook=$(printf %s "$TG_TOKEN" | sha256sum | cut -c1-32)
+          echo "::add-mask::$hook"
+          curl -sS -f -o /dev/null "https://api.telegram.org/bot$TG_TOKEN/setWebhook" \
+            --data-urlencode "url=$WORKER_URL/tg" \
+            --data-urlencode "secret_token=$hook" \
+            --data-urlencode 'allowed_updates=["message"]'
+          curl -sS -f -o /dev/null "https://api.telegram.org/bot$TG_TOKEN/setMyCommands" \
+            -H "Content-Type: application/json" \
+            -d '{"commands":[{"command":"plan","description":"План на сегодня"},{"command":"replan","description":"Перестроить план"},{"command":"reset","description":"Забыть историю переписки"},{"command":"help","description":"Что я умею"}]}'
+          echo "Готово: бот подключён к $WORKER_URL"

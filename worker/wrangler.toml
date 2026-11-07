@@ -1,0 +1,20 @@
+name = "day-plan"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+# Нейросеть Cloudflare (бесплатно ~10 000 «нейронов» в день)
+[ai]
+binding = "AI"
+
+# Хранилище плана дня и истории чата. ID подставляет деплой
+[[kv_namespaces]]
+binding = "KV"
+id = "__KV_ID__"
+
+# Каждую минуту: план в момент подъёма и напоминания
+[triggers]
+crons = ["* * * * *"]
+
+[observability]
+enabled = false
