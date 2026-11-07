@@ -428,7 +428,8 @@ async function makePlan(env, c, now, { update = false, retry = false, silent = f
   if (retry && error) return null;
   const { events, notes } = buildPlan(lessons, c);
   for (const e of events) e.sent = !e.r || e.s - EARLY <= now.min; // прошедшее не дублируем
-  const st = { date: now.date, wd: now.wd, events, notes, lessons, error, journalFailed: Boolean(error) };
+  // announced — утренний план уже отправлен; тихо построенный (из чата или /plan до подъёма) — ещё нет
+  const st = { date: now.date, wd: now.wd, events, notes, lessons, error, journalFailed: Boolean(error), announced: !silent };
   await putJSON(env, "day", st);
   if (!silent) await send(env, renderPlan(st, c, { update, weather: await weather(c), nowMin: update ? now.min : null }));
   return st;
@@ -440,7 +441,7 @@ export async function tick(env, at = new Date()) {
   const { c, now } = await loadCfg(env, at);
   const st = await getJSON(env, "day");
 
-  if (!st || st.date !== now.date) {
+  if (!st || st.date !== now.date || st.announced === false) {
     if (now.min >= c.wake && now.min < c.sleep) await makePlan(env, c, now);
     return;
   }
@@ -690,6 +691,20 @@ export async function handleUpdate(env, upd, at = new Date()) {
   if (cmd === "/settings") return send(env, "⚙️ Твой режим\n\n" + describeSettings(env, settings, now.date) + "\n\nИзменить можно обычным сообщением, например: «по выходным встаю в 9».");
   if (cmd === "/replan") { await makePlan(env, c, now, { update: true }); return; }
   if (cmd === "/plan") {
+    // ближе к отбою — показываем план на завтра (сохраняем отдельно не надо: утром он построится заново)
+    if (now.min >= c.sleep - 60) {
+      const date = nextDate(now.date);
+      const wd = (now.wd + 1) % 7;
+      const c2 = cfg(env, settings, date, wd);
+      let lessons = [];
+      let error = null;
+      try { lessons = await getLessons(env, date); } catch (e) { error = String(e.message || e).slice(0, 120); }
+      const { events, notes } = buildPlan(lessons, c2);
+      const body = renderPlan({ date, wd, events, notes, lessons, error }, c2, { update: true }).split("\n").slice(1).join("\n");
+      const text = `🌙 План на завтра (${WEEKDAYS_NOM[wd]}, ${ddmm(date)})\n` + body
+        + `\n\nПодъём в ${fmt(c2.wake)}. Утром пришлю точный план — пары ещё могут поменяться.`;
+      return send(env, text);
+    }
     let st = await getJSON(env, "day");
     if (!st || st.date !== now.date) st = await makePlan(env, c, now, { silent: true });
     return send(env, renderPlan(st, c, { update: true, nowMin: now.min }).replace("✏️ Обновлённый план", "📋 План"));
