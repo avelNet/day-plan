@@ -1,0 +1,47 @@
+name: Режим дня
+
+on:
+  workflow_dispatch: # запускается с cron-job.org в :00 и :30 с 06:00 до 22:30 или вручную
+
+concurrency:
+  group: day-plan # два запуска одновременно не пойдут
+  cancel-in-progress: false
+
+jobs:
+  day:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Восстановить план дня
+        uses: actions/cache/restore@v4
+        with:
+          path: daystate
+          key: daystate-${{ github.run_id }}
+          restore-keys: daystate-
+
+      - name: План и напоминания
+        env:
+          JOURNAL_LOGIN: ${{ secrets.JOURNAL_LOGIN }}
+          JOURNAL_PASSWORD: ${{ secrets.JOURNAL_PASSWORD }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          LAT: ${{ vars.LAT }}
+          LON: ${{ vars.LON }}
+          TZ_NAME: Asia/Novosibirsk
+          WAKE: ${{ vars.WAKE }}
+          SLEEP: ${{ vars.SLEEP }}
+          COMMUTE_MIN: ${{ vars.COMMUTE_MIN }}
+          JP_MIN: ${{ vars.JP_MIN }}
+          PROJECT_MAX_MIN: ${{ vars.PROJECT_MAX_MIN }}
+          PROJECT_NAME: ${{ vars.PROJECT_NAME }}
+          PROJECT_DEADLINE: ${{ vars.PROJECT_DEADLINE }}
+        run: python3 day.py
+
+      - name: Сохранить план дня
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: daystate
+          key: daystate-${{ github.run_id }}
